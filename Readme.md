@@ -4,8 +4,8 @@ SSMAPIPS is a Powershell module that facilitates interaction with a limited set 
 
 ### Installation & Usage
 
-- import-module SSMAPIPS.psm1
-- Connect-SSMService -Hostname <FQDN of your tenant> -Username <username> -Password <password>
+- `import-module SSMAPIPS.psm1`
+- `Connect-SSMService -Hostname <FQDN of your tenant> -Username <username> -Password <password>`
 
 ### Development
 
