@@ -7,6 +7,18 @@ SSMAPIPS is a Powershell module that facilitates interaction with a limited set 
 - `import-module SSMAPIPS.psm1`
 - `Connect-SSMService -Hostname <FQDN of your tenant> -Username <username> -Password <password>`
 
+### Capabilities
+- Connect-SSMService: Establish credentials for the module
+- Disconnect-SSMService: Remove credentials and token cache
+- Get-SSMRole
+- Get-SSMEntitlement
+- Get-SSMEndpoint
+- Get-SSMTask
+- Get-SSMTaskDetail
+- Get-SSMUserDetail
+- Get-SSMAccount
+- Get-SSMSavRole
+
 ### Development
 
 This module was written to facilite production operations at Washington University in St. Louis and is maintained with that team's desired needs in mind. Feel free to copy and modify this module as needed or submit code feedback and I'll try to incorperate it. I'm not an application developer by trade, so don't judge my code. :) This module provides read-only API integration at the time of creation. Eventually, I hope to expand into modification of data also.

@@ -67,6 +67,7 @@ function Connect-SSMService {
 
 # Disconnect the module from SSM. Will require a connect-ssmservice to get going again.
 function Disconnect-SSMService {
+    $script:SSMJWT = $null
     $script:Username = $null
     $script:Password = $null
     $Hostname = $script:Hostname
