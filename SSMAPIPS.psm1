@@ -395,6 +395,33 @@ function Get-SSMTask {
     return $Results.tasks | Select-Object -First $ResultSize
 }
 
+# Get ARS task details
+function Get-SSMTaskDetail {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][int]$TaskId
+    )
+
+    Test-SSMConnection # Make sure valid credentials were passed to the module
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/checkTaskStatus"
+
+    $Body = @{}
+       
+    if ($TaskId) {
+        $Body["taskid"] = $TaskId
+    }
+
+    $token = Get-SSMAuthToken
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($Body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Fetched $($Result.count) results."
+
+    return $Result
+}
 
 # Get SSM User Details
 function Get-SSMUser {
@@ -532,7 +559,7 @@ function Test-GetMoreResultsFromAPI {
 }
 
 
-# Get a lit of SSM SAV_ROLES
+# Get a list of SSM SAV_ROLES
 function Get-SSMSavRole {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $false)][string]$Username, 
@@ -568,11 +595,14 @@ function Get-SSMSavRole {
     return $Results.savRoles | Select-Object -First $ResultSize
 }
 
+
+
 Export-ModuleMember -function Connect-SSMService
 Export-ModuleMember -function Get-SSMRole
 Export-ModuleMember -function Get-SSMEntitlement
 Export-ModuleMember -Function Get-SSMEndpoint
 Export-ModuleMember -Function Get-SSMTask
+Export-ModuleMember -Function Get-SSMTaskDetail
 Export-ModuleMember -Function Get-SSMUserDetail
 Export-ModuleMember -Function Get-SSMAccount
 Export-ModuleMember -Function Get-SSMSavRole
