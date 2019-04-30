@@ -65,6 +65,16 @@ function Connect-SSMService {
     }
 }
 
+# Disconnect the module from SSM. Will require a connect-ssmservice to get going again.
+function Disconnect-SSMService {
+    $script:Username = $null
+    $script:Password = $null
+    $Hostname = $script:Hostname
+    $script:Hostname = $null
+    $script:Connected = $false
+    return "Disconnected from $Hostname"
+}
+
 # This checks if they've done Connect-SSMService or not
 function Test-SSMConnection {
     if (-not($script:Connected)) {
@@ -598,6 +608,7 @@ function Get-SSMSavRole {
 
 
 Export-ModuleMember -function Connect-SSMService
+Export-ModuleMember -function Disconnect-SSMService
 Export-ModuleMember -function Get-SSMRole
 Export-ModuleMember -function Get-SSMEntitlement
 Export-ModuleMember -Function Get-SSMEndpoint
