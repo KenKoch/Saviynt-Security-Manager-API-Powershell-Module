@@ -607,6 +607,37 @@ function Get-SSMSavRole {
 }
 
 
+# Mark a task completed with provisioning comments
+function Complete-SSMTask {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][int]$TaskId#, 
+        #[Parameter(Mandatory = $false)][string]$Comments  # Doesn't seem to work. Commenting out for now, opened a ticket with Saviynt.
+    )
+
+    Test-SSMConnection # Make sure valid credentials were passed to the module
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/completetask"
+
+    $Body = @{}
+    $Body["taskid"] = $TaskId
+    $Body["provisioning"] = "true"
+
+    if ($Comments) {
+        $Body["comments"] = $Comments
+    }
+
+   $token = Get-SSMAuthToken
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Fetched $($result.count) results."
+            
+    return $Result.result
+}
 
 Export-ModuleMember -function Connect-SSMService
 Export-ModuleMember -function Disconnect-SSMService
@@ -615,6 +646,7 @@ Export-ModuleMember -function Get-SSMEntitlement
 Export-ModuleMember -Function Get-SSMEndpoint
 Export-ModuleMember -Function Get-SSMTask
 Export-ModuleMember -Function Get-SSMTaskDetail
-Export-ModuleMember -Function Get-SSMUserDetail
+Export-ModuleMember -Function Get-SSMUser
 Export-ModuleMember -Function Get-SSMAccount
 Export-ModuleMember -Function Get-SSMSavRole
+Export-ModuleMember -Function Complete-SSMTask
