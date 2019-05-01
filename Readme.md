@@ -15,9 +15,10 @@ SSMAPIPS is a Powershell module that facilitates interaction with a limited set 
 - Get-SSMEndpoint
 - Get-SSMTask
 - Get-SSMTaskDetail
-- Get-SSMUserDetail
+- Get-SSMUser
 - Get-SSMAccount
 - Get-SSMSavRole
+- Complete-SSMTask
 
 ### Development
 
