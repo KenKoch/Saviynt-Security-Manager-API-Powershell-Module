@@ -9,7 +9,7 @@ Created: 2019-04-27 on Saviynt v5.3.1
 
 # Set all outbound calls to TLS 1.2 for SSM Production
 [Net.ServicePointManager]::SecUrityProtocol = [Net.SecUrityProtocolType]::Tls12
-
+ 
 # Converts base64 to readable text
 function Convert-FromBase64StringWithNoPadding([string]$data) {
     # https://www.powershellgallery.com/packages/Exch-Rest/2.7/Content/functions%5Cother%5CConvert-FromBase64StringWithNoPadding.ps1
@@ -194,7 +194,7 @@ function Get-SSMRole {
 
         $Results += $Result
         $ResultsTotalCount = $Results.Roledetails.Count  
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.accountdetails.Count -ResultSize $ResultSize -Max $Max))
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     
     return $Results.Roledetails | Select-Object -First $ResultSize
@@ -276,8 +276,8 @@ function Get-SSMEntitlement {
         $Body["Offset"] = $Offset
 
         $Results += $Result
-        $ResultsTotalCount = $Results.EntitlementDetails.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.accountdetails.Count -ResultSize $ResultSize -Max $Max))
+        $ResultsTotalCount = $Results.EntitlementDetails.Count        
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     return $Results.EntitlementDetails | Select-Object -First $ResultSize
 
@@ -337,7 +337,7 @@ function Get-SSMEndpoint {
 
         $Results += $Result
         $ResultsTotalCount = $Results.endpoints.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.accountdetails.Count -ResultSize $ResultSize -Max $Max))
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     return $Results.endpoints | Select-Object -First $ResultSize
 }
@@ -401,7 +401,7 @@ function Get-SSMTask {
 
         $Results += $Result
         $ResultsTotalCount = $Results.tasks.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.accountdetails.Count -ResultSize $ResultSize -Max $Max))
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     return $Results.tasks | Select-Object -First $ResultSize
 }
@@ -488,7 +488,7 @@ function Get-SSMUser {
 
         $Results += $Result
         $ResultsTotalCount = $Results.userdetails.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.accountdetails.Count -ResultSize $ResultSize -Max $Max))
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     return $Results.userdetails | Select-Object -First $ResultSize
 }
@@ -536,7 +536,8 @@ function Get-SSMAccount {
         $Body["Offset"] = $Offset
 
         $Results += $Result
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.accountdetails.Count -ResultSize $ResultSize -Max $Max))
+        $ResultsTotalCount = $Results.accountdetails.Count
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     return $Results.accountdetails | Select-Object -First $ResultSize
 }
@@ -601,7 +602,8 @@ function Get-SSMSavRole {
         Write-Verbose "API: Fetched $($Result.savRoles.count) results."
                
         $Results += $Result
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $Results.savRoles.Count -ResultSize $ResultSize -Max $Max))
+        $ResultsTotalCount = $Results.savRoles.Count
+    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
 
     return $Results.savRoles | Select-Object -First $ResultSize
 }
