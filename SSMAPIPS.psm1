@@ -40,7 +40,35 @@ function Convert-JWT([string]$rawToken) {
     Write-Verbose -Message ("JWT`r`n.headers: {0}`r`n.claims: {1}`r`n.signature: {2}`r`n" -f $headers, $claims, [System.BitConverter]::ToString($signature))
     return $customObject
 }
+function New-HttpQueryString {
+    [CmdletBinding()]
+    param 
+    (
+        [Parameter(Mandatory = $true)]
+        [String]
+        $Uri,
 
+        [Parameter(Mandatory = $true)]
+        [Hashtable]
+        $QueryParameter
+    )
+
+    # Add System.Web
+    Add-Type -AssemblyName System.Web
+
+    # Create a http name value collection from an empty string
+    $nvCollection = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
+
+    foreach ($key in $QueryParameter.Keys) {
+        $nvCollection.Add($key, $QueryParameter.$key)
+    }
+
+    # Build the uri
+    $uriRequest = [System.UriBuilder]$uri
+    $uriRequest.Query = $nvCollection.ToString()
+
+    return $uriRequest.Uri.OriginalString
+}
 # Verified API connectivity and sets credentials for the module functions  
 function Connect-SSMService {
     [cmdletbinding()] param(
@@ -87,16 +115,24 @@ function Test-SSMConnection {
 function Get-SSMAuthToken ([switch]$ForceRefresh) {
     $url = "https://$($script:Hostname)/ECM/api/login"
     $Method = "POST"
-     
+
+    if (-not($ForceRefresh)) {
+        # Don't test the credentials since it's a manual force
+        Test-SSMConnection # Make sure valid credentials were passed to the module
+    }
+
     # (Pseudo caching for the token) Check for token expiration within 5 minutes, reissue if expiring soon
     if ($script:SSMJWT -and (-not($ForceRefresh))) {
 
         # Add 5 min to current time for comparison
-        $currentDateTimeEpoch = [int][double]::Parse((Get-Date (get-date).AddMinutes(-5).touniversaltime() -UFormat %s))
+        $currentDateTimeEpoch = [int][double]::Parse((Get-Date (get-date).AddMinutes(5).touniversaltime() -UFormat %s))
         
         # Actual token expiration
         $tokenExpiration = (Convert-JWT -rawToken $script:SSMJWT.access_token).claims.exp
-   
+        
+        Write-Verbose "CurrentDateTimeEpoch: $($currentDateTimeEpoch)"
+        Write-Verbose "tokenExpiration: $($tokenExpiration)"
+
         if ($currentDateTimeEpoch -lt $tokenExpiration) {
             # Not expired
             $SSMValidAccessToken = $script:SSMJWT.access_token
@@ -106,8 +142,8 @@ function Get-SSMAuthToken ([switch]$ForceRefresh) {
 
     # Check if  SSMValidAccessToken was set. If not, get a new token
     if (-not($SSMValidAccessToken)) {
-        # Tee up te json body
-        $Body = (@{username = "$($script:Username)"; password = "$($script:Password)"}) | convertto-json
+        # Tee up the json body
+        $Body = (@{username = "$($script:Username)"; password = "$($script:Password)" }) | convertto-json
         
         # Get a new token
         $script:SSMJWT = Invoke-RestMethod -Uri $url -Body $Body -Method $Method -ContentType application/json
@@ -120,25 +156,91 @@ function Get-SSMAuthToken ([switch]$ForceRefresh) {
     return $SSMValidAccessToken
 }
 
+# Used for all API interaction with SSM
+function Invoke-SSMAPI {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $false)][hashtable]$Body, 
+        [Parameter(Mandatory = $true)][string]$Method, 
+        [Parameter(Mandatory = $true)][string]$URI,
+        [Parameter(Mandatory = $true)][string]$ContentType,
+        [Parameter(Mandatory = $true)][string]$Max,
+        [Parameter(Mandatory = $true)][string]$ResultSize
+    )
+
+    $Offset = 0
+    $Results = @()
+    do {
+        $token = Get-SSMAuthToken
+    
+        $Headers = @{
+            Authorization = "Bearer $token";
+        }
+                   
+        # Call the API
+        Write-Verbose "API URI: $($URI)"
+        Write-Verbose "API Headers: $($Headers | convertto-json)"
+        Write-Verbose "API Body: $($Body | convertto-json)"
+
+        # Different parameters for different methods, I wanted to re-use this same invoke-ssmapi function
+        switch ($Method) {
+            "GET" { $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -method $Method -ContentType $ContentType }
+            "POST" {
+                $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method $Method -ContentType $ContentType
+                    
+                $Offset += $Max
+                $Body["Offset"] = $Offset
+            }
+        }
+       
+        Write-Verbose "API Fetched $($Result.displaycount) results"
+        $Results += $Result
+        
+        if ($VerbosePreference) {
+            $Global:APIResultVariable = $Results
+        }
+
+        # Different json response depending on the endpoint. FreshDesk ticket: https://saviynt.freshdesk.com/helpdesk/tickets/109164
+        if ($Result.Total) {
+            $APITotalRecords = $Result.Total
+            $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
+        }
+        elseif ($Result.totalEntitlementCount) {            
+            $APITotalRecords = $Result.totalEntitlementCount
+            $APITotalFetchedCount = ($Results.entitlementsCount | Measure-Object -Sum).sum
+        }
+
+        Write-Verbose "API Total Records: $APITotalRecords"
+        Write-Verbose "API Total Fetched Records: $APITotalFetchedCount"
+        Write-Verbose "API Fetched Results are available in variable named `$Global:APIResultVariable"
+
+    } while ( `
+        ($Result.errorCode -eq 0) `
+            -and ($APITotalFetchedCount -lt $ResultSize) `
+            -and ($APITotalFetchedCount -ne $Result.Total) `
+            -and $APITotalRecords `
+    )
+
+    return $Results
+}
+
 # Retrieves SSM roles via search criteria
 function Get-SSMRole {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $false)][string]$Name, 
         [Parameter(Mandatory = $false)][switch]$IncludeEntitlementValues,
         [Parameter(Mandatory = $false)][switch]$IncludeUserDetails,
-        [Parameter(Mandatory = $false)][int]$Max = 50,
+        [Parameter(Mandatory = $true)][int]$Max,
         [Parameter(Mandatory = $false)][hashtable]$AdditionalSearchCriteria,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
     
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getRoles"
 
     $Offset = 0
-    $Body = @{}
+    $Body = @{ }
     
     # Trim Max to match resultsize
-    if ($ResultSize -lt $Max) { $Max = $ResultSize}
+    if ($ResultSize -lt $Max) { $Max = $ResultSize }
 
     # Add the role name first for pretty factor because that's the most common search for me
     if ($Name) {
@@ -175,28 +277,9 @@ function Get-SSMRole {
         Write-Warning "Searching may be slow due to lack of search criteria."
     }
 
-    $Results = @()
-    do {
-        $Continue = $false
-        $token = Get-SSMAuthToken
+    Write-Warning "Result set limited by max parameter. ResultSize parameter is ignored."
+    $Results = @(Invoke-SSMAPI -Uri $Uri -Body $body -method POST -ContentType application/json -Max $Max -ResultSize $ResultSize)
 
-        $Headers = @{
-            Authorization = "Bearer $token";
-        }
-   
-        # Format: json
-        $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
-        Write-Verbose "API: Fetched $($result.RoleDetails.count) results."
-       
-
-        $Offset += $Max  
-        $Body["Offset"] = $Offset
-
-        $Results += $Result
-        $ResultsTotalCount = $Results.Roledetails.Count  
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
-
-    
     return $Results.Roledetails | Select-Object -First $ResultSize
     
 }
@@ -216,11 +299,10 @@ function Get-SSMEntitlement {
         [Parameter(Mandatory = $false)][switch]$ExactMatch, 
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getEntitlements"
 
     $Offset = 0
-    $Body = @{}
+    $Body = @{ }
     
     # Add userdetails
     if ($IncludeUserDetails) {
@@ -257,30 +339,12 @@ function Get-SSMEntitlement {
     }
 
     if ($Name) {
-        $Body["entitlementfiltercriteria"] += @{entitlement_value = $Name}
+        $Body["entitlementfiltercriteria"] += @{entitlement_value = $Name }
     }
 
-    $Results = @()
-    do {
-        $token = Get-SSMAuthToken
-
-        $Headers = @{
-            Authorization = "Bearer $token";
-        }
-   
-        # Call the API
-        $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
-        Write-Verbose "API: Fetched $($result.EntitlementDetails.count) results."
-
-        $Offset += $Max  
-        $Body["Offset"] = $Offset
-
-        $Results += $Result
-        $ResultsTotalCount = $Results.EntitlementDetails.Count        
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
+    $Results = @(Invoke-SSMAPI -Uri $Uri -Body $body -method POST -ContentType application/json -Max $Max -ResultSize $ResultSize)
 
     return $Results.EntitlementDetails | Select-Object -First $ResultSize
-
 }
 
 
@@ -294,11 +358,10 @@ function Get-SSMEndpoint {
         [Parameter(Mandatory = $false)][hashtable]$FilterCriteria,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getEndpoints"
 
     $Offset = 0
-    $Body = @{}
+    $Body = @{ }
     
     # Append the max and offset, this gets updated for each search
     $Body["max"] = $Max
@@ -342,24 +405,61 @@ function Get-SSMEndpoint {
     return $Results.endpoints | Select-Object -First $ResultSize
 }
 
+# Get security systems
+function Get-SSMSecuritySystem {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $false)][string]$Name, 
+        [Parameter(Mandatory = $false)][string]$ConnectionType, 
+        [Parameter(Mandatory = $false)][string]$connectionName,         
+        [Parameter(Mandatory = $false)][int]$Max = 50,
+        [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
+    )
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/getSecuritySystems"
+
+    $Offset = 0
+    $Body = @{ }
+    
+    # Append the max and offset, this gets updated for each search
+    $Body["max"] = $Max
+    $Body["offset"] = $Offset
+   
+    $QueryStringParameters = @{ }
+    
+    if ($ConnectionType) {
+        $QueryStringParameters.Add("connectionType", $ConnectionType)
+    }
+
+    if ($connectionName) {
+        $QueryStringParameters.Add("connectionname", $connectionName)
+    }
+
+    if ($Name) {
+        $QueryStringParameters.Add("systemname", $Name)
+    }
+    
+    $Uri = New-HttpQueryString -Uri $Uri -QueryParameter $QueryStringParameters
+
+    $Results = @(Invoke-SSMAPI -Uri $Uri -method GET -ContentType application/json -Max $Max -ResultSize $ResultSize)
+
+    return $Results.securitySystemDetails | Select-Object -First $ResultSize
+}
 
 # Get ARS tasks
 function Get-SSMTask {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $false)][int]$TaskId, 
         [Parameter(Mandatory = $false)][string][ValidateSet("PENDING", "COMPLETED", "COMPLETED_AND_DISCONTINUE")]$TaskStatus, 
-        [Parameter(Mandatory = $false)][string]$SecuritySystem, 
-        [Parameter(Mandatory = $false)][string]$EndpointName,
+        [Parameter(Mandatory = $false)][int]$SecuritySystemKey, 
+        [Parameter(Mandatory = $false)][string]$Endpoint,
         [Parameter(Mandatory = $false)][int]$Max = 50,
         [Parameter(Mandatory = $false)][hashtable]$FilterCriteria,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
 
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/fetchTasks"
 
     $Offset = 0
-    $Body = @{}
+    $Body = @{ }
     
     # Append the max and offset, this gets updated for each search
     $Body["max"] = $Max
@@ -374,34 +474,16 @@ function Get-SSMTask {
         $Body["TASKSTATUS"] = $TaskStatus
     }
 
-    if ($EndpointName) {
-        $Body["endpointname"] = $EndpointName
+    if ($Endpoint) {
+        $Body["endpointname"] = $Endpoint
     }
 
     if ($SecuritySystem) {
-        $Body["securitysystemname"] = $SecuritySystem
+        $Body["securitysystem"] = $SecuritySystemKey
     }
-
-
-    $Results = @()
-    do {
-        $token = Get-SSMAuthToken
-
-        $Headers = @{
-            Authorization = "Bearer $token";
-        }
-   
-        # Call the API
-        $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($Body | Convertto-json) -method POST -ContentType application/json
-        Write-Verbose "API: Fetched $($Result.tasks.count) results."
-        # TODO: Verify max works correctly. Submitted a bug here, Saviynt ignores max parameter. https://saviynt.freshdesk.com/support/tickets/48855
-               
-        $Offset += $Max
-        $Body["Offset"] = $Offset
-
-        $Results += $Result
-        $ResultsTotalCount = $Results.tasks.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
+    
+    $Results = @(Invoke-SSMAPI -Uri $Uri -Body $Body -method POST -ContentType application/json -Max $Max -ResultSize $ResultSize)
+    # TODO: Verify max works correctly. Submitted a bug here, Saviynt ignores max parameter. https://saviynt.freshdesk.com/support/tickets/48855
 
     return $Results.tasks | Select-Object -First $ResultSize
 }
@@ -412,10 +494,9 @@ function Get-SSMTaskDetail {
         [Parameter(Mandatory = $true)][int]$TaskId
     )
 
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/checkTaskStatus"
 
-    $Body = @{}
+    $Body = @{ }
        
     if ($TaskId) {
         $Body["taskid"] = $TaskId
@@ -433,6 +514,7 @@ function Get-SSMTaskDetail {
 
     return $Result
 }
+# THROW "FINSIH SSMTASKDETAIL"
 
 # Get SSM User Details
 function Get-SSMUser {
@@ -445,68 +527,60 @@ function Get-SSMUser {
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
 
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getUser"
 
     $Offset = 0
-    $Body = @{}
+    $Body = @{ }
     
     # Append the max and offset, this gets updated for each search
     $Body["max"] = $Max
     $Body["offset"] = $Offset
 
-    if ($Username) {
-        $Body["username"] = $Username
+    if ($username -or $Email -or $FilterCriteria) {
+        if ($Username) {
+            $Body["username"] = $Username
+        }
+    
+        if ($Email) {
+            $Body["email"] = $Email
+        }
+    
+        if ($FilterCriteria) {
+            $Body["filtercriteria"] = $FilterCriteria
+        }    
     }
-
-    if ($Email) {
-        $Body["email"] = $Email
+    else {
+        Write-Error -ErrorAction Stop "Username, Email, or FilterCriteria are required"
     }
-
-    if ($FilterCriteria) {
-        $Body["filtercriteria"] = $FilterCriteria
-    }
-
+    
     if ($ResponseFields) {
         $Body["responsefields"] = $ResponseFields
     }
 
-    $Results = @()
-    do {
-        $token = Get-SSMAuthToken
-
-        $Headers = @{
-            Authorization = "Bearer $token";
-        }
-   
-        # Call the API
-        $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
-        Write-Verbose "API: Fetched $($Result.UserDetails.count) results."
-               
-        $Offset += $Max
-        $Body["Offset"] = $Offset
-
-        $Results += $Result
-        $ResultsTotalCount = $Results.userdetails.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
-
-    return $Results.userdetails | Select-Object -First $ResultSize
+    $Results = @(Invoke-SSMAPI -URI $Uri -Method "POST" -Body $Body -ContentType application/json -ResultSize $ResultSize -Max $Max)
+    
+    if ($Results.userdetails) {
+        return $Results.userdetails | Select-Object -First $ResultSize
+    }
+    else {
+        return $Results.userlist | Select-Object -First $ResultSize
+    }
 }
 
 # Get SSM accounts
 function Get-SSMAccount {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $false)][string]$Username, 
-        [Parameter(Mandatory = $false)][string]$EndpointName, 
+        [Parameter(Mandatory = $false)][string]$Endpoint, 
+        [Parameter(Mandatory = $false)][hashtable]$AdditionalSearchCriteria,
         [Parameter(Mandatory = $false)][int]$Max = 50,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
 
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getAccounts"
 
     $Offset = 0
-    $Body = @{}
+    $Body = @{ }
     
     # Append the max and offset, this gets updated for each search
     $Body["max"] = $Max
@@ -516,28 +590,16 @@ function Get-SSMAccount {
         $Body["username"] = $Username
     }
 
-    if ($EndpointName) {
-        $Body["endpoint"] = $EndpointName
+    if ($Endpoint) {
+        $Body["endpoint"] = $Endpoint
     }
 
-    $Results = @()
-    do {
-        $token = Get-SSMAuthToken
+    # Add all the custom search fields
+    if ($AdditionalSearchCriteria) {
+        $Body["advsearchcriteria"] = $AdditionalSearchCriteria | ConvertTo-Json # I believe this is formatted correctly but there's a bug in 5.3 that prevents advsearchcriteria from functioning.
+    }
 
-        $Headers = @{
-            Authorization = "Bearer $token";
-        }
-   
-        # Call the API
-        $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
-        Write-Verbose "API: Fetched $($Result.accountdetails.count) results."
-               
-        $Offset += $Max
-        $Body["Offset"] = $Offset
-
-        $Results += $Result
-        $ResultsTotalCount = $Results.accountdetails.Count
-    } while (($Result.errorCode -eq 0) -and (Test-GetMoreResultsFromAPI -TotalCount $ResultsTotalCount -ResultSize $ResultSize -Max $Max))
+    $Results = @(Invoke-SSMAPI -URI $Uri -Method "POST" -Body $Body -ContentType application/json -ResultSize $ResultSize -Max $Max)
 
     return $Results.accountdetails | Select-Object -First $ResultSize
 }
@@ -570,6 +632,37 @@ function Test-GetMoreResultsFromAPI {
     return $Continue
 }
 
+function Test-GetMoreResultsFromAPI2 {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][int]$APITotalCount, 
+        [Parameter(Mandatory = $true)][int]$APIFetchedCount, 
+        [Parameter(Mandatory = $true)][int]$Max,
+        [Parameter(Mandatory = $true)][int]$ResultSize
+    )
+    if ($FetchedAPICount -lt $ResultSize) {
+        # Not limited on purpose by the user
+
+    }
+    if ($TotalCount -lt $ResultSize) {
+        # Data count less than intended ResultSize
+        if ($TotalCount -lt $Max) {
+            # Got no data or ran out of data
+            $Continue = $False
+        }
+        else {
+            # Data count is less than max param
+            $Continue = $true
+        }
+    }
+    else {
+        # Data count more than ResultSize
+        $Continue = $false
+    }
+
+    # If true, then the calling function will get more results from the api
+    return $Continue
+}
+
 
 # Get a list of SSM SAV_ROLES
 function Get-SSMSavRole {
@@ -579,7 +672,6 @@ function Get-SSMSavRole {
     )
 
     $Max = 5
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getSavRoles"
 
     if ($Username) {
@@ -598,7 +690,7 @@ function Get-SSMSavRole {
         }
    
         # Call the API
-        $Result =  Invoke-RestMethod -Uri $Uri -Headers $Headers -Method GET
+        $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Method GET
         Write-Verbose "API: Fetched $($Result.savRoles.count) results."
                
         $Results += $Result
@@ -616,10 +708,9 @@ function Complete-SSMTask {
         #[Parameter(Mandatory = $false)][string]$Comments  # Doesn't seem to work. Commenting out for now, opened a ticket with Saviynt.
     )
 
-    Test-SSMConnection # Make sure valid credentials were passed to the module
     $Uri = "https://$($script:Hostname)/ECM/api/v5/completetask"
 
-    $Body = @{}
+    $Body = @{ }
     $Body["taskid"] = $TaskId
     $Body["provisioning"] = "true"
 
@@ -627,7 +718,7 @@ function Complete-SSMTask {
         $Body["comments"] = $Comments
     }
 
-   $token = Get-SSMAuthToken
+    $token = Get-SSMAuthToken
 
     $Headers = @{
         Authorization = "Bearer $token";
@@ -641,14 +732,105 @@ function Complete-SSMTask {
     return $Result.result
 }
 
-Export-ModuleMember -function Connect-SSMService
-Export-ModuleMember -function Disconnect-SSMService
-Export-ModuleMember -function Get-SSMRole
-Export-ModuleMember -function Get-SSMEntitlement
-Export-ModuleMember -Function Get-SSMEndpoint
-Export-ModuleMember -Function Get-SSMTask
-Export-ModuleMember -Function Get-SSMTaskDetail
-Export-ModuleMember -Function Get-SSMUser
-Export-ModuleMember -Function Get-SSMAccount
-Export-ModuleMember -Function Get-SSMSavRole
-Export-ModuleMember -Function Complete-SSMTask
+
+
+# Manipulate SSM accounts
+function Update-SSMAccount {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][string]$Name, 
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [Parameter(Mandatory = $true)][string]$SecuritySystemName,
+        [Parameter(Mandatory = $true)][hashtable]$AttributesToModify
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/updateAccount"
+
+    $token = Get-SSMAuthToken
+
+    $Body = @{ }
+    $Body["name"] = $Name
+    $Body["endpoint"] = $Endpoint
+    $Body["securitysystem"] = $SecuritySystemName
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    # Add the attributes to modify
+    foreach ($key in $AttributesToModify.GetEnumerator()) {
+        $Body[$key.Name] = $Key.Value
+    }
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+            
+    if ($result.errorCode -eq 0) {
+        return
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to update account. ErrorCode: $($result.errorcode), $($result.message)"
+    }
+}
+
+
+# Manipulate SSM accounts
+function Update-SSMUser {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][string]$Username, 
+        [Parameter(Mandatory = $false)][bool]$InlineRuleEvaluation = $true,
+        [Parameter(Mandatory = $false)][ValidateSet("0", "1")] [int] $StatusKey,
+        [Parameter(Mandatory = $false)][string]$UpdatedUsername, 
+        [Parameter(Mandatory = $false)][hashtable]$AttributesToModify
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/updateUser"
+
+    $token = Get-SSMAuthToken
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    $Body = @{ }
+    if ($Username) { $Body["username"] = $Username }
+    if ($StatusKey) { $Body["statuskey"] = $StatusKey }
+    if ($UpdatedUsername) { $Body["updatedusername"] = $UpdatedUsername }
+    switch ($InlineRuleEvaluation) {
+        $True { $Body["inlineruleevaluation"] = "true" }
+        $False { $Body["inlineruleevaluation"] = "false" }
+    }
+
+    # Add the attributes to modify
+    foreach ($key in $AttributesToModify.GetEnumerator()) {
+        $Body[$key.Name.ToLower()] = $Key.Value
+    }
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+
+    if ($result.errorCode -eq 0) {
+        return
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to update user. ErrorCode: $($result.errorcode), $($result.message)"
+    }
+}
+
+Export-ModuleMember -function *-SSM*
+# Export-ModuleMember -function Disconnect-SSMService
+# Export-ModuleMember -function Get-SSMRole
+# Export-ModuleMember -function Get-SSMEntitlement
+# Export-ModuleMember -Function Get-SSMEndpoint
+# Export-ModuleMember -Function Get-SSMTask
+# Export-ModuleMember -Function Get-SSMTaskDetail
+# Export-ModuleMember -Function Get-SSMUser
+# Export-ModuleMember -Function Get-SSMAccount
+# Export-ModuleMember -Function Get-SSMSavRole
+# Export-ModuleMember -Function Complete-SSMTask
+# Export-ModuleMember -Function Update-SSMAccount
+# Export-ModuleMember -Function Update-SSMUser
+# Export-ModuleMember -Function Get-SSMSecuritySystem 
