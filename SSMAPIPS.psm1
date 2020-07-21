@@ -170,6 +170,8 @@ function Invoke-SSMAPI {
     $Offset = 0
     $Results = @()
     do {
+        remove-variable Result 2>$null
+
         $token = Get-SSMAuthToken
     
         $Headers = @{
@@ -186,13 +188,11 @@ function Invoke-SSMAPI {
             "GET" { $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -method $Method -ContentType $ContentType }
             "POST" {
                 $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method $Method -ContentType $ContentType
-                    
                 $Offset += $Max
                 $Body["Offset"] = $Offset
             }
         }
-       
-        Write-Verbose "API Fetched $($Result.displaycount) results"
+               
         $Results += $Result
         
         if ($VerbosePreference) {
@@ -200,25 +200,56 @@ function Invoke-SSMAPI {
         }
 
         # Different json response depending on the endpoint. FreshDesk ticket: https://saviynt.freshdesk.com/helpdesk/tickets/109164
-        if ($Result.Total) {
-            $APITotalRecords = $Result.Total
-            $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
-        }
-        elseif ($Result.totalEntitlementCount) {            
+        # if ($Result.Total) {
+        #     $APITotalRecords = $Result.Total
+        #     $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
+        #     Write-Verbose "API Fetched $($Result.displaycount) results"
+        # } elseif ($Result.totalEntitlementCount) {
+        #     $APITotalRecords = $Result.totalEntitlementCount
+        #     $APITotalFetchedCount = ($Results.entitlementsCount | Measure-Object -Sum).sum
+        #     Write-Verbose "API Fetched $($Result.entitlementsCount) results"
+        # } elseif ($Result.totalTasks) {
+        #     $APITotalRecords = $Result.totalTasks
+        #     $APITotalFetchedCount = ($Results.totalRecords | Measure-Object -Sum).sum
+        #     Write-Verbose "API Fetched $($Result.totalRecords) results"
+        # }
+
+        # We have to identify the type of json response since each call isn't a standard response set for paging
+        if ($Result.totalTasks) {  # tasks
+            $APITotalRecords = $Result.totalTasks # The total number available
+            $APITotalFetchedCount = ($Results.totalRecords | Measure-Object -Sum).sum # Sum of all fetched records
+            $APIFetchedCount = $Result.totalRecords
+            Write-Verbose "API Fetched $($APIFetchedCount) results"
+        } elseif ($Result.totalEntitlementCount) { # Entitlements
             $APITotalRecords = $Result.totalEntitlementCount
             $APITotalFetchedCount = ($Results.entitlementsCount | Measure-Object -Sum).sum
+            $APIFetchedCount = $Result.entitlementsCount
+            Write-Verbose "API Fetched $($APIFetchedCount) results"
+        } elseif ($Results.totalcount) { # getUsers
+            $APITotalRecords = $Result.totalcount
+            $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
+            $APIFetchedCount = $Result.displaycount
+            Write-Verbose "API Fetched $($APIFetchedCount) results"      
+        } else  { # ($Results.Total) catch all..  Accounts for sure
+            $APITotalRecords = $Result.total
+            $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
+            $APIFetchedCount = $Result.displaycount
+            Write-Verbose "API Fetched $($APIFetchedCount) results"
         }
+        
 
         Write-Verbose "API Total Records: $APITotalRecords"
         Write-Verbose "API Total Fetched Records: $APITotalFetchedCount"
         Write-Verbose "API Fetched Results are available in variable named `$Global:APIResultVariable"
 
+        write-verbose "If $($APITotalFetchedCount) -lt $($ResultSize)"
+        write-verbose "If $($APITotalFetchedCount) -ne $($APITotalRecords)"
+        write-verbose "If $($APITotalRecords)"
     } while ( `
         ($Result.errorCode -eq 0) `
-            -and ($APITotalFetchedCount -lt $ResultSize) `
-            -and ($APITotalFetchedCount -ne $Result.Total) `
-            -and $APITotalRecords `
-    )
+            -and ($APITotalFetchedCount -lt $ResultSize) <# Total amount fetched less than specified resultSize #> `
+            -and ($APITotalFetchedCount -ne $APITotalRecords) `
+            -and $APITotalRecords <# There are records in the response still #> )
 
     return $Results
 }
@@ -521,7 +552,7 @@ function Get-SSMUser {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $false)][string]$Username, 
         [Parameter(Mandatory = $false)][string]$Email, 
-        [Parameter(Mandatory = $false)][int]$Max = 50,
+        [Parameter(Mandatory = $false)][int]$Max = 500,
         [Parameter(Mandatory = $false)][hashtable]$FilterCriteria,
         [Parameter(Mandatory = $false)][array]$ResponseFields,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
@@ -559,7 +590,7 @@ function Get-SSMUser {
 
     $Results = @(Invoke-SSMAPI -URI $Uri -Method "POST" -Body $Body -ContentType application/json -ResultSize $ResultSize -Max $Max)
     
-    if ($Results.userdetails) {
+    if ($Results.userdetails.Length -gt $Results.userlist.Length) {
         return $Results.userdetails | Select-Object -First $ResultSize
     }
     else {
@@ -733,6 +764,41 @@ function Complete-SSMTask {
 }
 
 
+# Mark a task discontinued with comments
+function Discontinue-SSMTask {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][int]$TaskId, 
+        [Parameter(Mandatory = $true)][string]$Comments  # Doesn't seem to work. Commenting out for now, opened a ticket with Saviynt.
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/discontinueTask"
+
+    $taskkeytodiscontinue = @{ }
+    $taskkeytodiscontinue["discontinueassociatedtask"] = "true"
+    $taskkeytodiscontinue["taskid"] = "$($TaskId)"
+
+    if ($Comments) {
+        $taskkeytodiscontinue["comments"] = $Comments
+    }
+      
+    
+    $Body = @{ }
+    $Body["taskkeytodiscontinue"] = @($taskkeytodiscontinue) # I don't support multiple taskIDs at once. Sorry.
+
+    $token = Get-SSMAuthToken
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Fetched $($result.count) results."
+            
+    return $Result.result
+}
+
 
 # Manipulate SSM accounts
 function Update-SSMAccount {
@@ -804,7 +870,7 @@ function Update-SSMUser {
 
     # Add the attributes to modify
     foreach ($key in $AttributesToModify.GetEnumerator()) {
-        $Body[$key.Name.ToLower()] = $Key.Value
+        $Body[$key.Name] = $Key.Value
     }
 
     Write-Verbose "Body: $($body | Convertto-json)"
@@ -821,16 +887,3 @@ function Update-SSMUser {
 }
 
 Export-ModuleMember -function *-SSM*
-# Export-ModuleMember -function Disconnect-SSMService
-# Export-ModuleMember -function Get-SSMRole
-# Export-ModuleMember -function Get-SSMEntitlement
-# Export-ModuleMember -Function Get-SSMEndpoint
-# Export-ModuleMember -Function Get-SSMTask
-# Export-ModuleMember -Function Get-SSMTaskDetail
-# Export-ModuleMember -Function Get-SSMUser
-# Export-ModuleMember -Function Get-SSMAccount
-# Export-ModuleMember -Function Get-SSMSavRole
-# Export-ModuleMember -Function Complete-SSMTask
-# Export-ModuleMember -Function Update-SSMAccount
-# Export-ModuleMember -Function Update-SSMUser
-# Export-ModuleMember -Function Get-SSMSecuritySystem 
