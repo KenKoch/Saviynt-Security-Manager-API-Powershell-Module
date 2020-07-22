@@ -215,17 +215,17 @@ function Invoke-SSMAPI {
         # }
 
         # We have to identify the type of json response since each call isn't a standard response set for paging
-        if ($Result.totalTasks) {  # tasks
+        if ($Result.totalTasks -gt 0) {  # tasks
             $APITotalRecords = $Result.totalTasks # The total number available
             $APITotalFetchedCount = ($Results.totalRecords | Measure-Object -Sum).sum # Sum of all fetched records
             $APIFetchedCount = $Result.totalRecords
             Write-Verbose "API Fetched $($APIFetchedCount) results"
-        } elseif ($Result.totalEntitlementCount) { # Entitlements
+        } elseif ($Result.totalEntitlementCount -gt 0) { # Entitlements
             $APITotalRecords = $Result.totalEntitlementCount
             $APITotalFetchedCount = ($Results.entitlementsCount | Measure-Object -Sum).sum
             $APIFetchedCount = $Result.entitlementsCount
             Write-Verbose "API Fetched $($APIFetchedCount) results"
-        } elseif ($Results.totalcount) { # getUsers
+        } elseif ($Results.totalcount -gt 0) { # getUsers
             $APITotalRecords = $Result.totalcount
             $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
             $APIFetchedCount = $Result.displaycount
@@ -573,7 +573,8 @@ function Get-SSMUser {
         }
     
         if ($Email) {
-            $Body["email"] = $Email
+            $FilterCriteria += @{"email"="$($Email)"}
+            #$Body["email"] = $Email
         }
     
         if ($FilterCriteria) {
@@ -581,7 +582,8 @@ function Get-SSMUser {
         }    
     }
     else {
-        Write-Error -ErrorAction Stop "Username, Email, or FilterCriteria are required"
+        Write-Warning  "Fetching all users since Username, Email, and FilterCriteria aren't used"
+        $Body["filtercriteria"] = @{"username"="*"}
     }
     
     if ($ResponseFields) {
@@ -604,7 +606,7 @@ function Get-SSMAccount {
         [Parameter(Mandatory = $false)][string]$Username, 
         [Parameter(Mandatory = $false)][string]$Endpoint, 
         [Parameter(Mandatory = $false)][hashtable]$AdditionalSearchCriteria,
-        [Parameter(Mandatory = $false)][int]$Max = 50,
+        [Parameter(Mandatory = $false)][int]$Max = 500,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
 
@@ -841,12 +843,49 @@ function Update-SSMAccount {
 }
 
 
+# Assign SSM accounts to a owner (user)
+function Set-SSMAccountOwner {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][string]$AccountName, 
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [Parameter(Mandatory = $true)][string]$SecuritySystem,
+        [Parameter(Mandatory = $true)][string]$Username
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/assignAccountToUser"
+
+    $token = Get-SSMAuthToken
+
+    $Body = @{ }
+    $Body["accountname"] = $AccountName
+    $Body["endpoint"] = $Endpoint
+    $Body["securitysystem"] = $SecuritySystem
+    $Body["username"] = $Username
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+            
+    if ($result.errorCode -eq 0) {
+        return
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to assign account. ErrorCode: $($result.errorcode), $($result.message)"
+    }
+}
+
+
 # Manipulate SSM accounts
 function Update-SSMUser {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $true)][string]$Username, 
         [Parameter(Mandatory = $false)][bool]$InlineRuleEvaluation = $true,
-        [Parameter(Mandatory = $false)][ValidateSet("0", "1")] [int] $StatusKey,
+        [Parameter(Mandatory = $false)][ValidateSet(0, 1)]$StatusKey,
         [Parameter(Mandatory = $false)][string]$UpdatedUsername, 
         [Parameter(Mandatory = $false)][hashtable]$AttributesToModify
     )
@@ -861,7 +900,7 @@ function Update-SSMUser {
 
     $Body = @{ }
     if ($Username) { $Body["username"] = $Username }
-    if ($StatusKey) { $Body["statuskey"] = $StatusKey }
+    if ($StatusKey.Length -gt 0) { $Body["statuskey"] = $StatusKey }
     if ($UpdatedUsername) { $Body["updatedusername"] = $UpdatedUsername }
     switch ($InlineRuleEvaluation) {
         $True { $Body["inlineruleevaluation"] = "true" }
@@ -869,10 +908,12 @@ function Update-SSMUser {
     }
 
     # Add the attributes to modify
-    foreach ($key in $AttributesToModify.GetEnumerator()) {
-        $Body[$key.Name] = $Key.Value
+    if ($AttributesToModify) {
+        foreach ($key in $AttributesToModify.GetEnumerator()) {
+            $Body[$key.Name] = $Key.Value
+        }    
     }
-
+    
     Write-Verbose "Body: $($body | Convertto-json)"
     # Call the API
     $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
