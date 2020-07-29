@@ -592,9 +592,9 @@ function Get-SSMUser {
 
     $Results = @(Invoke-SSMAPI -URI $Uri -Method "POST" -Body $Body -ContentType application/json -ResultSize $ResultSize -Max $Max)
     
-    if ($Results.userdetails.Length -gt $Results.userlist.Length) {
+    if (($Results.userdetails.Length -gt $Results.userlist.Length) -or ($null -ne $Results.userdetails)) {
         return $Results.userdetails | Select-Object -First $ResultSize
-    }
+    } 
     else {
         return $Results.userlist | Select-Object -First $ResultSize
     }
@@ -629,7 +629,7 @@ function Get-SSMAccount {
 
     # Add all the custom search fields
     if ($AdditionalSearchCriteria) {
-        $Body["advsearchcriteria"] = $AdditionalSearchCriteria | ConvertTo-Json # I believe this is formatted correctly but there's a bug in 5.3 that prevents advsearchcriteria from functioning.
+        $Body["advsearchcriteria"] = $AdditionalSearchCriteria # I believe this is formatted correctly but there's a bug in 5.3 that prevents advsearchcriteria from functioning.
     }
 
     $Results = @(Invoke-SSMAPI -URI $Uri -Method "POST" -Body $Body -ContentType application/json -ResultSize $ResultSize -Max $Max)
