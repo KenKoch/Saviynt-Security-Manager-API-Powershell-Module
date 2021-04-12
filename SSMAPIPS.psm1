@@ -4,7 +4,8 @@ Module file for Saviynt API access
 Written by Ken Koch @ Washington University in St. Louis
 https://github.com/KenKoch/Saviynt-Security-Manager-API-Powershell-Module
 
-Created: 2019-04-27 on Saviynt v5.3.1
+Created: 2019-04-27 on Saviynt v5.3.1 and updated for 5.5.0
+         2020-11-24  Added analytics execution and fetch
 #>
 
 # Set all outbound calls to TLS 1.2 for SSM Production
@@ -15,10 +16,18 @@ function Convert-FromBase64StringWithNoPadding([string]$data) {
     # https://www.powershellgallery.com/packages/Exch-Rest/2.7/Content/functions%5Cother%5CConvert-FromBase64StringWithNoPadding.ps1
     $data = $data.Replace('-', '+').Replace('_', '/')
     switch ($data.Length % 4) {
-        0 { break }
-        2 { $data += '==' }
-        3 { $data += '=' }
-        default { throw New-Object ArgumentException('data') }
+        0 {
+            break 
+        }
+        2 {
+            $data += '==' 
+        }
+        3 {
+            $data += '=' 
+        }
+        default {
+            throw New-Object ArgumentException('data') 
+        }
     }
     return [System.Convert]::FromBase64String($data)
 }
@@ -185,7 +194,9 @@ function Invoke-SSMAPI {
 
         # Different parameters for different methods, I wanted to re-use this same invoke-ssmapi function
         switch ($Method) {
-            "GET" { $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -method $Method -ContentType $ContentType }
+            "GET" {
+                $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -method $Method -ContentType $ContentType 
+            }
             "POST" {
                 $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method $Method -ContentType $ContentType
                 $Offset += $Max
@@ -215,22 +226,33 @@ function Invoke-SSMAPI {
         # }
 
         # We have to identify the type of json response since each call isn't a standard response set for paging
-        if ($Result.totalTasks -gt 0) {  # tasks
+        if ($Result.totalTasks -gt 0) {
+            # tasks
             $APITotalRecords = $Result.totalTasks # The total number available
+            $APITotalFetchedCountPrioToThisRun = $APITotalFetchedCount
             $APITotalFetchedCount = ($Results.totalRecords | Measure-Object -Sum).sum # Sum of all fetched records
+            if ($APITotalFetchedCountPrioToThisRun -eq $APITotalFetchedCount) {
+                write-warning "WARNING: Saviynt API is not returning correct TotalRecords count."; break
+            } # The api isn't returning any more records but they don't equal the expected APITotalRecords.. Abort
             $APIFetchedCount = $Result.totalRecords
             Write-Verbose "API Fetched $($APIFetchedCount) results"
-        } elseif ($Result.totalEntitlementCount -gt 0) { # Entitlements
+        }
+        elseif ($Result.totalEntitlementCount -gt 0) {
+            # Entitlements
             $APITotalRecords = $Result.totalEntitlementCount
             $APITotalFetchedCount = ($Results.entitlementsCount | Measure-Object -Sum).sum
             $APIFetchedCount = $Result.entitlementsCount
             Write-Verbose "API Fetched $($APIFetchedCount) results"
-        } elseif ($Results.totalcount -gt 0) { # getUsers
+        }
+        elseif ($Results.totalcount -gt 0) {
+            # getUsers
             $APITotalRecords = $Result.totalcount
             $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
             $APIFetchedCount = $Result.displaycount
             Write-Verbose "API Fetched $($APIFetchedCount) results"      
-        } else  { # ($Results.Total) catch all..  Accounts for sure
+        }
+        else {
+            # ($Results.Total) catch all..  Accounts for sure
             $APITotalRecords = $Result.total
             $APITotalFetchedCount = ($Results.displaycount | Measure-Object -Sum).sum
             $APIFetchedCount = $Result.displaycount
@@ -243,7 +265,7 @@ function Invoke-SSMAPI {
         Write-Verbose "API Fetched Results are available in variable named `$Global:APIResultVariable"
 
         write-verbose "If $($APITotalFetchedCount) -lt $($ResultSize)"
-        write-verbose "If $($APITotalFetchedCount) -ne $($APITotalRecords)"
+        write-verbose "If $($APITotalFetchedCount) -lt $($APITotalRecords)"
         write-verbose "If $($APITotalRecords)"
     } while ( `
         ($Result.errorCode -eq 0) `
@@ -258,9 +280,10 @@ function Invoke-SSMAPI {
 function Get-SSMRole {
     [cmdletbinding()] param(
         [Parameter(Mandatory = $false)][string]$Name, 
+        [Parameter(Mandatory = $false)][string]$Username, 
         [Parameter(Mandatory = $false)][switch]$IncludeEntitlementValues,
         [Parameter(Mandatory = $false)][switch]$IncludeUserDetails,
-        [Parameter(Mandatory = $true)][int]$Max,
+        [Parameter(Mandatory = $false)][int]$Max = 500,
         [Parameter(Mandatory = $false)][hashtable]$AdditionalSearchCriteria,
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
     )
@@ -271,11 +294,17 @@ function Get-SSMRole {
     $Body = @{ }
     
     # Trim Max to match resultsize
-    if ($ResultSize -lt $Max) { $Max = $ResultSize }
+    if ($ResultSize -lt $Max) {
+        $Max = $ResultSize 
+    }
 
     # Add the role name first for pretty factor because that's the most common search for me
     if ($Name) {
         $Body["role_name"] = $Name
+    }
+
+    if ($Username) {
+        $Body["username"] = $Username
     }
 
     # Add EVs
@@ -304,11 +333,10 @@ function Get-SSMRole {
     $Body["max"] = $Max
     $Body["offset"] = $Offset
 
-    if ((-not($Name)) -and (-not($AdditionalSearchCriteria))) {
+    if ((-not($Name)) -and (-not($AdditionalSearchCriteria)) -and (-not($username))) {
         Write-Warning "Searching may be slow due to lack of search criteria."
     }
 
-    Write-Warning "Result set limited by max parameter. ResultSize parameter is ignored."
     $Results = @(Invoke-SSMAPI -Uri $Uri -Body $body -method POST -ContentType application/json -Max $Max -ResultSize $ResultSize)
 
     return $Results.Roledetails | Select-Object -First $ResultSize
@@ -555,7 +583,8 @@ function Get-SSMUser {
         [Parameter(Mandatory = $false)][int]$Max = 500,
         [Parameter(Mandatory = $false)][hashtable]$FilterCriteria,
         [Parameter(Mandatory = $false)][array]$ResponseFields,
-        [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize
+        [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize,
+        [Parameter(Mandatory = $false)][string]$UserQuery
     )
 
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getUser"
@@ -567,32 +596,38 @@ function Get-SSMUser {
     $Body["max"] = $Max
     $Body["offset"] = $Offset
 
-    if ($username -or $Email -or $FilterCriteria) {
-        if ($Username) {
-            $Body["username"] = $Username
+    if (-not($UserQuery)) {
+        if ($username -or $Email -or $FilterCriteria) {
+            if ($Username) {
+                $Body["username"] = $Username
+            }
+        
+            if ($Email) {
+                $FilterCriteria += @{"email" = "$($Email)"}
+                #$Body["email"] = $Email
+            }
+        
+            if ($FilterCriteria) {
+                $Body["filtercriteria"] = $FilterCriteria
+            }    
         }
-    
-        if ($Email) {
-            $FilterCriteria += @{"email"="$($Email)"}
-            #$Body["email"] = $Email
+        else {
+            Write-Warning  "Fetching all users since Username, Email, and FilterCriteria aren't used"
+            $Body["filtercriteria"] = @{"username" = "*"}
         }
-    
-        if ($FilterCriteria) {
-            $Body["filtercriteria"] = $FilterCriteria
-        }    
     }
     else {
-        Write-Warning  "Fetching all users since Username, Email, and FilterCriteria aren't used"
-        $Body["filtercriteria"] = @{"username"="*"}
+        $Body["userQuery"] = $UserQuery
     }
+    
     
     if ($ResponseFields) {
         $Body["responsefields"] = $ResponseFields
     }
 
     $Results = @(Invoke-SSMAPI -URI $Uri -Method "POST" -Body $Body -ContentType application/json -ResultSize $ResultSize -Max $Max)
-    
-    if (($Results.userdetails.Length -gt $Results.userlist.Length) -or ($null -ne $Results.userdetails)) {
+    #$global:Results= $Results
+    if ($Results.userdetails.Length -gt $Results.userlist.Length) {
         return $Results.userdetails | Select-Object -First $ResultSize
     } 
     else {
@@ -843,6 +878,38 @@ function Update-SSMAccount {
 }
 
 
+# Remove SSM role
+function Remove-SSMRole {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][string]$Username, 
+        [Parameter(Mandatory = $true)][string]$RoleName
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/removerole"
+
+    $token = Get-SSMAuthToken
+
+    $Body = @{ }
+    $Body["username"] = $Username
+    $Body["rolename"] = $RoleName
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+            
+    if ($result.errorCode -eq 0) {
+        return
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to remove role. ErrorCode: $($result.errorcode), $($result.message)"
+    }
+}
+
 # Assign SSM accounts to a owner (user)
 function Set-SSMAccountOwner {
     [cmdletbinding()] param(
@@ -899,12 +966,22 @@ function Update-SSMUser {
     }
 
     $Body = @{ }
-    if ($Username) { $Body["username"] = $Username }
-    if ($StatusKey.Length -gt 0) { $Body["statuskey"] = $StatusKey }
-    if ($UpdatedUsername) { $Body["updatedusername"] = $UpdatedUsername }
+    if ($Username) {
+        $Body["username"] = $Username 
+    }
+    if ($StatusKey.Length -gt 0) {
+        $Body["statuskey"] = $StatusKey 
+    }
+    if ($UpdatedUsername) {
+        $Body["updatedusername"] = $UpdatedUsername 
+    }
     switch ($InlineRuleEvaluation) {
-        $True { $Body["inlineruleevaluation"] = "true" }
-        $False { $Body["inlineruleevaluation"] = "false" }
+        $True {
+            $Body["inlineruleevaluation"] = "true" 
+        }
+        $False {
+            $Body["inlineruleevaluation"] = "false" 
+        }
     }
 
     # Add the attributes to modify
@@ -927,4 +1004,81 @@ function Update-SSMUser {
     }
 }
 
+
+# Manipulate SSM accounts
+function Invoke-SSMAnalytic {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][int]$Id
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/runAnalyticsControls"
+
+    $token = Get-SSMAuthToken
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    $Body = @{ }
+    if ($Id) {
+        $Body["analyticsid"] = $Id 
+    }
+    $Body["jobgroup"] = "Analytics"
+    $Body["jobname"] = "AnalyticsESJob"
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method POST -ContentType application/json
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+
+    if ($result.errorCode -eq 0) {
+        return $Result
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to execute analytic. ErrorCode: $($result.errorcode), $($result.message)"
+    }
+}
+
+function Get-SSMAnalyticResult {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][int]$Id,
+        [Parameter(Mandatory = $false)][int]$Max = 500
+    )
+
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/fetchControlDetailsES"
+
+    $token = Get-SSMAuthToken
+
+    $Headers = @{
+        Authorization = "Bearer $token";
+    }
+
+    $Body = @{ }
+
+    if ($Id) {
+        $Body["analyticsid"] = $Id 
+    }
+
+    if ($Max) {
+        $Body["max"] = $Max
+    }
+
+    $Body["offset"] = "0"
+    #    $Body["loggedinuser"] = "1710144"
+
+    Write-Verbose "Body: $($body | Convertto-json)"
+    # Call the API
+    $Result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Body $($body | Convertto-json) -method GET -ContentType application/json
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+
+    if ($result.errorCode -eq 0) {
+        return $Result
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to execute analytic. ErrorCode: $($result.errorcode), $($result.message)"
+    }
+}
+
 Export-ModuleMember -function *-SSM*
+
+
