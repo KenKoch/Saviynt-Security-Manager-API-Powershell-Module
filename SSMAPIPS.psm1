@@ -344,6 +344,80 @@ function Get-SSMRole {
 }
 
 
+# Add an SSM user to an SSM role
+function Add-SSMRoleMember {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][string]$Username, 
+        [Parameter(Mandatory = $true)][string]$RoleName,
+        [Parameter(Mandatory = $true)][string]$BusinessJustification,
+        [Parameter(Mandatory = $false)][string]$RoleType = "ENTERPRISE"
+    )
+    
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/createrequest"
+
+    $Body = @{ }
+
+    $Body["accesstype"] = "ROLES"
+    $Body["username"] = $Username
+    $Body["roletype"] = $RoleType
+    $Body["requesttype"] = 1 #1 apparently means add role
+    $Body["roles"] = @(@{
+            rolename              = $RoleName;
+            businessJustification = $BusinessJustification
+        })
+    $Body["requestcomments"] = "SSM API Prod Ops Script"
+    $Body["requestor"] = "wuit-svc-entengazurelogicappsrvlog"
+
+    Write-Verbose $($body | convertto-json -depth 100)
+
+    $Result = Invoke-SSMAPI -Uri $Uri -Body $body -method POST -ContentType application/json -Max 1 -ResultSize 100
+
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+
+    if ($result.errorCode -eq 0) {
+        return
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to update user. ErrorCode: $($result.errorcode), $($result.message)"
+    }  
+}
+
+function Remove-SSMRoleMember {
+    [cmdletbinding()] param(
+        [Parameter(Mandatory = $true)][string]$Username, 
+        [Parameter(Mandatory = $true)][string]$RoleName,
+        [Parameter(Mandatory = $false)][string]$RoleType = "ENTERPRISE"
+    )
+    
+    $Uri = "https://$($script:Hostname)/ECM/api/v5/createrequest"
+
+    $Body = @{ }
+
+    $Body["accesstype"] = "ROLES"
+    $Body["username"] = $Username
+    $Body["roletype"] = $RoleType
+    $Body["requesttype"] = 4 #4 apparently means remove role
+    $Body["roles"] = @(@{
+            rolename = $RoleName
+        })
+    $Body["requestcomments"] = "SSM API Prod Ops Script"
+    $Body["requestor"] = "wuit-svc-entengazurelogicappsrvlog"
+    
+    Write-Verbose $($body | convertto-json -depth 100)
+
+    $Result = Invoke-SSMAPI -Uri $Uri -Body $body -method POST -ContentType application/json -Max 1 -ResultSize 100
+
+    Write-Verbose "API: Messsage and errorcode: $($result.errorcode):$($result.message)."
+
+    if ($result.errorCode -eq 0) {
+        return
+    }
+    else {
+        Write-Error -ERroraction Stop "Failed to update user. ErrorCode: $($result.errorcode), $($result.message)"
+    }  
+}
+
+
 # Get entitlements
 function Get-SSMEntitlement {
     [cmdletbinding()] param(
@@ -586,6 +660,11 @@ function Get-SSMUser {
         [Parameter(Mandatory = $false)][int]$ResultSize = $script:DefaultResultSize,
         [Parameter(Mandatory = $false)][string]$UserQuery
     )
+
+    if ($Max -gt 500) {
+        Write-Warning "Saviynt imposes a max:500 restriction on get users beginning with SP3."
+        $Max = 500
+    }
 
     $Uri = "https://$($script:Hostname)/ECM/api/v5/getUser"
 
